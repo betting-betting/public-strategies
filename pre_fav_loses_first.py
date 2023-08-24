@@ -1,0 +1,114 @@
+from sql import sqlDF
+import pandas as pd
+from datetime import datetime
+
+
+query = '''
+with score_data as (select scores.*,mapping.betfair_event_name
+FROM 
+tennis_score_data scores
+inner join
+score_event_mapping mapping
+on scores.EVENT_NAME  = mapping.Sofascore_slug),
+
+data as (select score_data.*,home.market_id,home.selection_id,home.players,home.player_location
+from
+score_data
+inner join
+(select *
+from
+tennis_selection_home_away_matching
+where player_location = 'home') home
+on score_data.betfair_event_name = home.betfair_event_name and home.players = score_data.home
+
+UNION 
+
+select score_data.*,away.market_id,away.selection_id,away.players,away.player_location
+from
+score_data
+inner join
+(select *
+from
+tennis_selection_home_away_matching
+where player_location = 'away') away
+on score_data.betfair_event_name = away.betfair_event_name and away.players = score_data.away),
+
+filtered_data as (select *,
+CASE 
+	when data.home_set1 > data.away_set1 then 'home'
+	when data.home_set1 < data.away_set1 then 'away'
+END as set_1_winner
+FROM 
+data
+where 1=1
+and data.current_set = '2nd set'
+and data.home_set2 = 0
+and data.away_set2 = 0),
+
+odds as (select odds.*,mapping.*,selection_mapping.player_location,selection_mapping.betfair_event_name
+from
+betfair_tennis_match_odds_data odds
+inner join
+betfair_smarkets_event_market_mapping mapping
+on odds.marketId = mapping.Betfair_market_id
+inner join
+tennis_selection_home_away_matching selection_mapping
+on odds.selection_id = selection_mapping.selection_id and odds.marketId = selection_mapping.market_id),
+
+
+starting_odds as (select odds.betfair_event_name,odds.back_price1,odds.player_location
+FROM 
+odds
+inner join
+(select odds.betfair_event_name,min(odds.created_ts) as min_time
+from 
+odds
+group by odds.betfair_event_name) times
+on odds.betfair_event_name = times.betfair_event_name and odds.created_ts = times.min_time),
+
+prematch_favs as (select starting_odds.betfair_event_name,starting_odds.back_price1 as prematch_price,starting_odds.player_location as prematch_fav
+from
+(select starting_odds.betfair_event_name,min(back_price1) as fav_price
+FROM 
+starting_odds
+group by starting_odds.betfair_event_name) fav_odds
+inner JOIN 
+starting_odds 
+on fav_odds.fav_price = starting_odds.back_price1 and fav_odds.betfair_event_name = starting_odds.betfair_event_name)
+
+
+select 
+filtered_data.market_id,
+filtered_data.selection_id
+FROM 
+filtered_data
+inner join
+prematch_favs
+on filtered_data.betfair_event_name = prematch_favs.betfair_event_name and filtered_data.player_location = prematch_favs.prematch_fav
+where 1=1
+and prematch_favs.prematch_fav != filtered_data.set_1_winner
+and abs(time_to_sec(timediff(filtered_data.created_ts,now()))) < 5000
+group by 
+filtered_data.market_id,
+filtered_data.selection_id'''
+
+while True:
+    start = datetime.now()
+    data = sqlDF(query)
+    other_data = sqlDF(other)
+    
+    check = pd.merge(data,other_data,left_on = ['betfair_event_name','player_location'],right_on = ['betfair_event_name','prematch_fav'],how = 'inner')
+    
+    check['time_diff'] = [abs(time - datetime.now()).total_seconds() for time in check['CREATED_TS']]
+    
+    check_2 = check.loc[(check['prematch_fav'] != check['set_1_winner'])&(check['time_diff'] < 300)]
+    
+    end = datetime.now()
+    diff = end-start
+    
+    if len(check_2) > 0:
+        print('data found')
+    
+    print(f'{diff.total_seconds()} seconds')
+
+#rename all variables and tidy up, then add clause that created_ts of the score need to be in the last n seconds and then put it in format to write to orders table

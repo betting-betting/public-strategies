@@ -1,0 +1,4 @@
+select *
+from 
+tennis_orders 
+where date(created_ts) = date(sysdate())
